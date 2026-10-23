@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 GRADLE_VERSION="9.7.1"
-BASE_DIR="${GRADLE_USER_HOME:-$HOME/.gradle}/wallpaper-studio-dists"
+BASE_DIR="${GRADLE_USER_HOME:-$HOME/.gradle}/wall-extend-dists"
 DIST_DIR="$BASE_DIR/gradle-$GRADLE_VERSION"
 if [ ! -x "$DIST_DIR/bin/gradle" ]; then
   mkdir -p "$BASE_DIR"

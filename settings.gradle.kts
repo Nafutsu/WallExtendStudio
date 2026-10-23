@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "WallExtendStudio"
+rootProject.name = "WallExtend"
 include(":app")

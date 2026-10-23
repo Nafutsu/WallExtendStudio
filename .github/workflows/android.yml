@@ -21,6 +21,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform
+        run: |
+          sdkmanager "build-tools;37.0.0" || true
+          sdkmanager --list_installed | grep -E "platforms;android-3[67]" || true
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
       - name: Grant execute permission for gradlew
@@ -30,6 +36,6 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: wallpaper-studio-debug-apk
+          name: wall-extend-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
