@@ -147,7 +147,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             } catch (_: SecurityException) {
                 // Some document providers offer temporary rather than persistable access.
             }
@@ -666,4 +666,3 @@ private fun ModeChip(item: FillMode, selected: Boolean, onClick: () -> Unit) {
 private fun StatusLine(message: String) {
     Text(message, color = Accent, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp), textAlign = TextAlign.Center)
 }
-
