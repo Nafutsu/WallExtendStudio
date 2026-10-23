@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "dev.mouya.wallpaperstudio"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dev.mouya.wallpaperstudio"
