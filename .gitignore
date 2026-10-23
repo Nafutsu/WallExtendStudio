@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+*.iml
+local.properties
+**/build/
+.DS_Store
+Thumbs.db
+.git-credentials
+.backup/
+local.properties
+*.log
