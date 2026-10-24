@@ -14,12 +14,12 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 enum class FillMode(val title: String, val detail: String) {
-    ADVANCED_BLUR("高级渐变模糊", "保留主体，上下边缘延展与渐变模糊")
+    ADVANCED_BLUR("高级渐变模糊", "上下留白延展，主体保留")
 }
 
 data class BlurMaskConfig(
-    val clearAreaRatio: Float = 0.5f, 
-    val edgeBlurRadius: Int = 40,     
+    val clearAreaRatio: Float = 0.6f, 
+    val edgeBlurRadius: Int = 60,     
     val scale: Float = 1f,
     val verticalPosition: Float = 0.5f
 )
@@ -54,72 +54,60 @@ object WallpaperProcessor {
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         
-        // --- 1. 计算前景原图的位置（限制最大高度，强制留出上下空间） ---
-        // 即使原图比屏幕长，我们也最多只让它占屏幕高度的 75% ~ 85%，这样上下才有空隙做延展
-        val maxForegroundHeight = height * 0.85f
-        val maxForegroundWidth = width * 0.95f
-        
-        var fgWidth = source.width.toFloat()
-        var fgHeight = source.height.toFloat()
-        
-        // 按比例缩放原图，使其适应屏幕
-        val scaleFactor = min(maxForegroundWidth / fgWidth, maxForegroundHeight / fgHeight) * config.scale
-        fgWidth *= scaleFactor
-        fgHeight *= scaleFactor
-        
-        val left = (width - fgWidth) / 2f
-        val top = (height - fgHeight) * config.verticalPosition
-        val drawRect = RectF(left, top, left + fgWidth, top + fgHeight)
+        // --- 1. 绘制底层模糊背景 (Full Cover) ---
+        // 先把原图按铺满屏幕的比例缩放并居中，作为背景
+        val bgFactor = max(width.toFloat() / source.width, height.toFloat() / source.height)
+        val bgWidth = source.width * bgFactor
+        val bgHeight = source.height * bgFactor
+        val bgLeft = (width - bgWidth) / 2f
+        val bgTop = (height - bgHeight) / 2f
+        val bgRect = RectF(bgLeft, bgTop, bgLeft + bgWidth, bgTop + bgHeight)
 
-        // --- 2. 构建高级背景层（边缘1像素拉伸 + 高斯模糊） ---
-        // 为了模拟 iOS 的背景，我们截取原图最顶部的 1 像素，和底部的 1 像素，分别向上和向下拉伸
+        // 创建一个临时画布画背景
         val bgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val bgCanvas = Canvas(bgBitmap)
-        
-        val topRow = Bitmap.createBitmap(source, 0, 0, source.width, 1)
-        val bottomRow = Bitmap.createBitmap(source, 0, source.height - 1, source.width, 1)
-        
-        // 将顶部的 1 像素拉伸填满上半部分
-        bgCanvas.drawBitmap(topRow, null, RectF(0f, 0f, width.toFloat(), top + 2f), paint)
-        // 将底部的 1 像素拉伸填满下半部分
-        bgCanvas.drawBitmap(bottomRow, null, RectF(0f, top + fgHeight - 2f, width.toFloat(), height.toFloat()), paint)
-        
-        topRow.recycle()
-        bottomRow.recycle()
+        bgCanvas.drawBitmap(source, null, bgRect, paint)
 
-        // 对这个拉伸的背景进行真正的高斯模糊
+        // 对背景进行重度模糊
         val blurredBg = gaussianBlur(bgBitmap, config.edgeBlurRadius)
         canvas.drawBitmap(blurredBg, 0f, 0f, paint)
+        
         if (blurredBg !== bgBitmap) blurredBg.recycle()
         bgBitmap.recycle()
 
-        // --- 3. 绘制前景原图，并应用一次函数渐变遮罩 ---
+        // --- 2. 计算前景原图的位置 ---
+        // 按照原图的宽度铺满屏幕（结合 scale 缩放）
+        val factor = width.toFloat() / source.width * config.scale
+        val drawWidth = source.width * factor
+        val drawHeight = source.height * factor
+        val left = (width - drawWidth) / 2f
+        val top = (height - drawHeight) * config.verticalPosition
+        val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
+
+        // --- 3. 绘制前景原图并添加渐变融合 ---
         val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val fgCanvas = Canvas(fgBitmap)
         
-        // 画上清晰的主体（稍微做一点圆角处理，显得更高级，如果要直角可以把圆角去掉）
-        val roundedRect = RectF(drawRect)
-        val cornerRadius = width * 0.08f
-        fgCanvas.drawRoundRect(roundedRect, cornerRadius, cornerRadius, paint)
+        // 绘制清晰的原始图片
+        fgCanvas.drawBitmap(source, null, drawRect, paint)
         
-        // 构建渐变遮罩：让原图的上下边缘逐渐融入模糊背景
-        val fadeDistance = (fgHeight * (1f - config.clearAreaRatio)) / 2f
-        val fadeTop = top + fadeDistance
-        val fadeBottom = top + fgHeight - fadeDistance
-
+        // 计算渐变遮罩（让边缘融化进背景）
+        // clearAreaRatio 越大，原图清晰的部分越多，边缘渐隐部分越短
+        val fadeHeight = (drawHeight * (1f - config.clearAreaRatio)) / 2f
+        
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         maskPaint.shader = LinearGradient(
-            0f, top, 0f, top + fgHeight,
+            0f, top, 0f, top + drawHeight,
             intArrayOf(
-                Color.TRANSPARENT, // 原图最顶部：完全透明（融入背景）
-                Color.BLACK,       // 过渡到主体：显示原图
-                Color.BLACK,       // 主体下部：显示原图
-                Color.TRANSPARENT  // 原图最底部：完全透明（融入背景）
+                Color.TRANSPARENT, // 图片顶部：完全透明（露出背景模糊）
+                Color.BLACK,       // 渐变结束：完全不透明（显示清晰原图）
+                Color.BLACK,       // 渐变开始：完全不透明
+                Color.TRANSPARENT  // 图片底部：完全透明（露出背景模糊）
             ),
             floatArrayOf(
                 0f, 
-                fadeDistance / fgHeight, 
-                (fgHeight - fadeDistance) / fgHeight, 
+                fadeHeight / drawHeight, 
+                (drawHeight - fadeHeight) / drawHeight, 
                 1f
             ),
             Shader.TileMode.CLAMP
@@ -127,23 +115,21 @@ object WallpaperProcessor {
         maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
         
-        // 将处理好的前景盖上去
+        // 盖到背景上
         canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
         fgBitmap.recycle()
     }
 
     /**
      * 真正的高斯模糊（3次 BoxBlur 叠加逼近高斯）
-     * 相比单次 BoxBlur，这种方式边缘极其柔和，绝对不会出现鬼影和发光
      */
     private fun gaussianBlur(source: Bitmap, radius: Int): Bitmap {
-        // 先缩小图片，极大提高性能并增加柔滑感
-        val scale = 0.25f
+        val scale = 0.2f // 降低分辨率大幅提升性能，并让模糊更丝滑
         val smallWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
         val smallHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(source, smallWidth, smallHeight, true)
 
-        // 3次 BoxBlur 叠加
+        // 3次 BoxBlur 叠加消除鬼影
         var blurred = boxBlur(scaled, radius / 2)
         blurred = boxBlur(blurred, radius / 2)
         blurred = boxBlur(blurred, radius / 2)
