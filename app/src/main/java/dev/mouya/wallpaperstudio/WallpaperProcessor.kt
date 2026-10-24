@@ -14,7 +14,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 enum class FillMode(val title: String, val detail: String) {
-    ADVANCED_BLUR("高级渐变模糊", "全屏模糊打底，边缘一次函数渐变融合")
+    ADVANCED_BLUR("高级渐变模糊", "顶部延展融合，底部保持清晰")
 }
 
 data class BlurMaskConfig(
@@ -57,7 +57,6 @@ object WallpaperProcessor {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         
         // --- 1. 绘制底层：全屏铺满的模糊背景 ---
-        // 这样即使原图比例跟屏幕差很多，背景也永远有颜色，不会漏出难看的黑边或灰块
         val bgFactor = max(width.toFloat() / source.width, height.toFloat() / source.height)
         val bgWidth = source.width * bgFactor
         val bgHeight = source.height * bgFactor
@@ -65,7 +64,6 @@ object WallpaperProcessor {
         val bgTop = (height - bgHeight) / 2f
         val bgRect = RectF(bgLeft, bgTop, bgLeft + bgWidth, bgTop + bgHeight)
         
-        // 生成背景模糊图
         val blurredBg = boxBlur(source, config.edgeBlurRadius, max(width, height))
         canvas.drawBitmap(blurredBg, null, bgRect, paint)
         if (blurredBg !== source) blurredBg.recycle()
@@ -79,53 +77,44 @@ object WallpaperProcessor {
         val bottom = top + drawHeight
         val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
 
-        // --- 3. 绘制前置延展边缘 (复用原代码 2.5% 拉伸) ---
-        // 这一步确保如果有留白，边缘的颜色能完美衔接原图
+        // --- 3. 绘制前置延展边缘 (只保留顶部，移除底部) ---
         if (top > 0f) {
             drawEdgeBand(canvas, source, width, top, true, paint)
         }
-        if (bottom < height) {
-            drawEdgeBand(canvas, source, width, height - bottom, false, paint, topOffset = bottom)
-        }
+        // 👈 这里删除了底部的 drawEdgeBand 调用，所以底部不再延展
 
-        // --- 4. 绘制原图主体并应用一次函数渐变融合 ---
+        // --- 4. 绘制原图主体并应用顶部渐变 ---
         val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val fgCanvas = Canvas(fgBitmap)
         
-        // 画上清晰的原图
         fgCanvas.drawBitmap(source, null, drawRect, paint)
         
-        // 计算渐变深度（中间清晰的区域由 clearAreaRatio 控制）
         val fadeHeight = (drawHeight * (1f - config.clearAreaRatio)) / 2f
         
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         maskPaint.shader = LinearGradient(
             0f, top, 0f, top + drawHeight,
             intArrayOf(
-                Color.TRANSPARENT, // 图片顶部：完全透明（露出背景模糊）
-                Color.BLACK,       // 渐变结束：完全不透明（显示清晰原图）
-                Color.BLACK,       // 渐变开始：完全不透明
-                Color.TRANSPARENT  // 图片底部：完全透明（露出背景模糊）
+                Color.TRANSPARENT, // 顶部：透明（融入背景）
+                Color.BLACK,       // 渐变结束：显示原图
+                Color.BLACK,       // 中间：显示原图
+                Color.BLACK        // 👈 底部：保持原图清晰，不融入背景
             ),
             floatArrayOf(
                 0f, 
                 fadeHeight / drawHeight, 
-                (drawHeight - fadeHeight) / drawHeight, 
-                1f
+                1f, 
+                1f // 底部不再做渐变过渡
             ),
             Shader.TileMode.CLAMP
         )
         maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
         
-        // 盖到屏幕上
         canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
         fgBitmap.recycle()
     }
 
-    /**
-     * 提取边缘像素进行拉伸（你最初代码的完美复刻）
-     */
     private fun drawEdgeBand(
         canvas: Canvas,
         source: Bitmap,
@@ -141,7 +130,7 @@ object WallpaperProcessor {
         val strip = Bitmap.createBitmap(source, 0, sourceY, source.width, sliceHeight)
         
         val destination = if (topBand) {
-            RectF(0f, 0f, width.toFloat(), gapHeight + 5f) // 稍微多画一点防缝隙
+            RectF(0f, 0f, width.toFloat(), gapHeight + 5f)
         } else {
             RectF(0f, topOffset - 5f, width.toFloat(), topOffset + gapHeight)
         }
@@ -149,7 +138,6 @@ object WallpaperProcessor {
         strip.recycle()
     }
 
-    // 参考代码原版的 BoxBlur（性能好，带降采样）
     private fun boxBlur(source: Bitmap, radius: Int, maxSize: Int = 1080): Bitmap {
         val r = radius.coerceAtLeast(1)
         
