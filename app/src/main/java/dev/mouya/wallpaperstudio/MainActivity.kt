@@ -87,6 +87,9 @@ private val Line = Color(0xFFE5E5EA)
 private val White = Color(0xFFFFFFFF)
 private val SecondarySurface = Color(0xFFF0F0F5)
 
+/** 当前使用的填充模式：改为 TOP_EXTEND_BLUR（向上延展 + 顶部厚模糊） */
+private val CURRENT_FILL_MODE = FillMode.TOP_EXTEND_BLUR
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -142,8 +145,11 @@ private fun WallExtendApp(screen: ScreenSpec) {
     var verticalPosition by remember { mutableFloatStateOf(0.5f) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    var clearAreaRatio by remember { mutableFloatStateOf(0.6f) }
-    var edgeBlurRadius by remember { mutableFloatStateOf(60f) } // 默认为厚
+    // ===== 模糊参数（针对 TOP_EXTEND_BLUR 优化） =====
+    var clearAreaRatio by remember { mutableFloatStateOf(0.5f) }
+    var edgeBlurRadius by remember { mutableFloatStateOf(50f) }   // 单次模糊半径
+    var blurThickness by remember { mutableFloatStateOf(3f) }    // 模糊迭代次数 = 厚度
+    var bgScale by remember { mutableFloatStateOf(1.25f) }       // 背景放大防露底
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -163,8 +169,10 @@ private fun WallExtendApp(screen: ScreenSpec) {
                     originalDimensions = loaded.originalWidth to loaded.originalHeight
                     scale = 1f
                     verticalPosition = 0.5f
-                    clearAreaRatio = 0.6f
-                    edgeBlurRadius = 60f
+                    clearAreaRatio = 0.5f
+                    edgeBlurRadius = 50f
+                    blurThickness = 3f
+                    bgScale = 1.25f
                     releaseBitmapLater(scope, oldPhoto, 250L)
                     releaseBitmapLater(scope, oldPreview, 180L)
                 } catch (error: Exception) {
@@ -177,7 +185,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
         }
     }
 
-    LaunchedEffect(photoBitmap, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, screen.widthPx, screen.heightPx) {
+    LaunchedEffect(photoBitmap, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, blurThickness, bgScale, screen.widthPx, screen.heightPx) {
         val source = photoBitmap ?: run {
             val oldPreview = previewBitmap
             previewBitmap = null
@@ -190,10 +198,12 @@ private fun WallExtendApp(screen: ScreenSpec) {
         val ownerContext = currentCoroutineContext()
         val rendered = withContext(Dispatchers.Default + NonCancellable) {
             WallpaperProcessor.render(
-                source, previewWidth, previewHeight, FillMode.ADVANCED_BLUR, scale, verticalPosition,
+                source, previewWidth, previewHeight, CURRENT_FILL_MODE, scale, verticalPosition,
                 blurConfig = BlurMaskConfig(
                     clearAreaRatio = clearAreaRatio,
                     edgeBlurRadius = edgeBlurRadius.toInt(),
+                    blurIterations = blurThickness.toInt().coerceIn(1, 6),
+                    bgScale = bgScale,
                     scale = scale,
                     verticalPosition = verticalPosition
                 )
@@ -235,6 +245,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                 verticalPosition = verticalPosition,
                 clearAreaRatio = clearAreaRatio,
                 edgeBlurRadius = edgeBlurRadius,
+                blurThickness = blurThickness,
+                bgScale = bgScale,
                 processing = processing,
                 statusMessage = statusMessage,
                 onBack = {
@@ -252,6 +264,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                 onPositionChange = { verticalPosition = it },
                 onClearAreaChange = { clearAreaRatio = it },
                 onBlurRadiusChange = { edgeBlurRadius = it },
+                onBlurThicknessChange = { blurThickness = it },
+                onBgScaleChange = { bgScale = it },
                 onSave = {
                     val uri = selectedUri
                     if (uri != null && !processing) {
@@ -260,8 +274,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                         scope.launch {
                             var output: Bitmap? = null
                             try {
-                                output = withContext(Dispatchers.IO) { 
-                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                output = withContext(Dispatchers.IO) {
+                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, blurThickness, bgScale)
                                 }
                                 val saved = withContext(Dispatchers.IO) { saveToPictures(context, output!!) }
                                 statusMessage = if (saved != null) "已保存到相册 · Pictures/WallExtend" else "保存失败，请检查存储空间后重试。"
@@ -282,8 +296,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                         scope.launch {
                             var output: Bitmap? = null
                             try {
-                                output = withContext(Dispatchers.IO) { 
-                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                output = withContext(Dispatchers.IO) {
+                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, blurThickness, bgScale)
                                 }
                                 withContext(Dispatchers.IO) {
                                     WallpaperManager.getInstance(context).setBitmap(
@@ -320,15 +334,19 @@ private suspend fun renderFullSize(
     scale: Float,
     verticalPosition: Float,
     clearAreaRatio: Float,
-    edgeBlurRadius: Float
+    edgeBlurRadius: Float,
+    blurThickness: Float,
+    bgScale: Float
 ): Bitmap = withContext(Dispatchers.IO) {
     val loaded = PhotoLoader.load(context, uri, minOf(5200, maxOf(screen.heightPx, screen.widthPx) * 2))
     try {
         WallpaperProcessor.render(
-            loaded.bitmap, screen.widthPx, screen.heightPx, FillMode.ADVANCED_BLUR, scale, verticalPosition,
+            loaded.bitmap, screen.widthPx, screen.heightPx, CURRENT_FILL_MODE, scale, verticalPosition,
             blurConfig = BlurMaskConfig(
                 clearAreaRatio = clearAreaRatio,
                 edgeBlurRadius = edgeBlurRadius.toInt(),
+                blurIterations = blurThickness.toInt().coerceIn(1, 6),
+                bgScale = bgScale,
                 scale = scale,
                 verticalPosition = verticalPosition
             )
@@ -437,6 +455,8 @@ private fun EditorScreen(
     verticalPosition: Float,
     clearAreaRatio: Float,
     edgeBlurRadius: Float,
+    blurThickness: Float,
+    bgScale: Float,
     processing: Boolean,
     statusMessage: String,
     onBack: () -> Unit,
@@ -445,6 +465,8 @@ private fun EditorScreen(
     onPositionChange: (Float) -> Unit,
     onClearAreaChange: (Float) -> Unit,
     onBlurRadiusChange: (Float) -> Unit,
+    onBlurThicknessChange: (Float) -> Unit,
+    onBgScaleChange: (Float) -> Unit,
     onSave: () -> Unit,
     onApply: () -> Unit
 ) {
@@ -485,7 +507,7 @@ private fun EditorScreen(
                         Text("放大主体", color = Muted, fontSize = 11.sp)
                     }
                 }
-                
+
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("上下位置", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -505,24 +527,52 @@ private fun EditorScreen(
                         Text("靠下", color = Muted, fontSize = 11.sp)
                     }
                 }
-                
+
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-                
-                // 调整模糊厚度：现在可以拉到 100 以上，背景会非常厚实
+
+                // 单次模糊半径
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("背景模糊厚度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("单次模糊半径", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
                         Text("${edgeBlurRadius.toInt()}", color = Accent, fontSize = 13.sp)
                     }
                     MiuixSlider(value = edgeBlurRadius, onValueChange = onBlurRadiusChange, valueRange = 20f..120f, modifier = Modifier.fillMaxWidth())
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("轻", color = Muted, fontSize = 11.sp)
+                        Text("重", color = Muted, fontSize = 11.sp)
+                    }
+                }
+
+                // ★ 模糊厚度（核心）：多次叠加，直接决定“厚薄”
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("模糊叠加厚度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        Text("${blurThickness.toInt()}层", color = Accent, fontSize = 13.sp)
+                    }
+                    MiuixSlider(value = blurThickness, onValueChange = onBlurThicknessChange, valueRange = 1f..6f, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("薄", color = Muted, fontSize = 11.sp)
                         Text("厚", color = Muted, fontSize = 11.sp)
                     }
                 }
 
-                // 控制清晰区域占比
+                // 背景放大（防露底）
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("背景放大（防露底）", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        Text("${String.format(Locale.US, "%.2f", bgScale)}×", color = Accent, fontSize = 13.sp)
+                    }
+                    MiuixSlider(value = bgScale, onValueChange = onBgScaleChange, valueRange = 1.0f..1.5f, modifier = Modifier.fillMaxWidth())
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("紧凑", color = Muted, fontSize = 11.sp)
+                        Text("延展", color = Muted, fontSize = 11.sp)
+                    }
+                }
+
+                // 清晰主体范围
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("清晰主体范围", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -577,17 +627,18 @@ private fun DevicePreview(screen: ScreenSpec, bitmap: Bitmap?) {
                 Text(dateLabel, color = White.copy(alpha = 0.94f), fontSize = 9.sp, fontWeight = FontWeight.Medium)
                 Text("9:41", color = White, fontSize = 34.sp, lineHeight = 39.sp, fontWeight = FontWeight.Light)
                 Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(38.dp), modifier = Modifier.padding(bottom = 4.dp)) {
-                    Box(Modifier.size(22.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.22f)))
-                    Box(Modifier.size(22.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.22f)))
-                }
             }
-            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 5.dp).width(76.dp).height(3.dp).clip(CircleShape).background(White.copy(alpha = 0.85f)))
         }
     }
 }
 
 @Composable
 private fun StatusLine(message: String) {
-    Text(message, color = Accent, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp), textAlign = TextAlign.Center)
+    Text(
+        message,
+        color = if (message.contains("失败") || message.contains("重试")) Color(0xFFB00020) else Accent,
+        fontSize = 12.sp,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
