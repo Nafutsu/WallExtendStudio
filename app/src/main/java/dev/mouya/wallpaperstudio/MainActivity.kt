@@ -20,7 +20,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -79,9 +78,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
-
-// 引入原生的 Color 并使用别名防止冲突
-import android.graphics.Color as AndroidColor
 
 private val CanvasColor = Color(0xFFF5F5F7)
 private val Ink = Color(0xFF1D1D1F)
@@ -142,23 +138,19 @@ private fun WallExtendApp(screen: ScreenSpec) {
     var loadingPhoto by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(FillMode.EDGE) }
+    var mode by remember { mutableStateOf(FillMode.ADVANCED_BLUR) }
     var scale by remember { mutableFloatStateOf(1f) }
     var verticalPosition by remember { mutableFloatStateOf(0.5f) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // ====== 新增：高级模糊参数 ======
     var clearAreaRatio by remember { mutableFloatStateOf(0.5f) }
-    var edgeBlurRadius by remember { mutableFloatStateOf(35f) }
-    // ================================
+    var edgeBlurRadius by remember { mutableFloatStateOf(40f) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             try {
                 context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: SecurityException) {
-                // Some document providers offer temporary rather than persistable access.
-            }
+            } catch (_: SecurityException) {}
             loadingPhoto = true
             statusMessage = ""
             scope.launch {
@@ -170,11 +162,10 @@ private fun WallExtendApp(screen: ScreenSpec) {
                     photoBitmap = loaded.bitmap
                     previewBitmap = null
                     originalDimensions = loaded.originalWidth to loaded.originalHeight
-                    mode = FillMode.EDGE
                     scale = 1f
                     verticalPosition = 0.5f
-                    clearAreaRatio = 0.5f // 重置高级参数
-                    edgeBlurRadius = 35f  // 重置高级参数
+                    clearAreaRatio = 0.5f
+                    edgeBlurRadius = 40f
                     releaseBitmapLater(scope, oldPhoto, 250L)
                     releaseBitmapLater(scope, oldPreview, 180L)
                 } catch (error: Exception) {
@@ -187,8 +178,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
         }
     }
 
-    // 加入新参数，让其变化时能触发预览重绘
-    LaunchedEffect(photoBitmap, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, screen.widthPx, screen.heightPx) {
+    LaunchedEffect(photoBitmap, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, screen.widthPx, screen.heightPx) {
         val source = photoBitmap ?: run {
             val oldPreview = previewBitmap
             previewBitmap = null
@@ -200,20 +190,15 @@ private fun WallExtendApp(screen: ScreenSpec) {
         val previewHeight = (previewWidth * screen.heightPx.toFloat() / screen.widthPx).roundToInt().coerceAtLeast(1)
         val ownerContext = currentCoroutineContext()
         val rendered = withContext(Dispatchers.Default + NonCancellable) {
-            if (mode == FillMode.ADVANCED_BLUR) {
-                WallpaperProcessor.render(
-                    source, previewWidth, previewHeight, mode, scale, verticalPosition,
-                    blurConfig = BlurMaskConfig(
-                        clearAreaRatio = clearAreaRatio,
-                        edgeBlurRadius = edgeBlurRadius.toInt(),
-                        scale = scale,
-                        verticalPosition = verticalPosition,
-                        tintColor = AndroidColor.argb(40, 0, 0, 0) // 预览时轻微压暗
-                    )
+            WallpaperProcessor.render(
+                source, previewWidth, previewHeight, mode, scale, verticalPosition,
+                blurConfig = BlurMaskConfig(
+                    clearAreaRatio = clearAreaRatio,
+                    edgeBlurRadius = edgeBlurRadius.toInt(),
+                    scale = scale,
+                    verticalPosition = verticalPosition
                 )
-            } else {
-                WallpaperProcessor.render(source, previewWidth, previewHeight, mode, scale, verticalPosition)
-            }
+            )
         }
         if (!ownerContext.isActive) {
             rendered.recycle()
@@ -247,11 +232,10 @@ private fun WallExtendApp(screen: ScreenSpec) {
                 screen = screen,
                 previewBitmap = previewBitmap,
                 originalDimensions = originalDimensions,
-                mode = mode,
                 scale = scale,
                 verticalPosition = verticalPosition,
-                clearAreaRatio = clearAreaRatio,   // 传给 UI
-                edgeBlurRadius = edgeBlurRadius,   // 传给 UI
+                clearAreaRatio = clearAreaRatio,
+                edgeBlurRadius = edgeBlurRadius,
                 processing = processing,
                 statusMessage = statusMessage,
                 onBack = {
@@ -265,11 +249,10 @@ private fun WallExtendApp(screen: ScreenSpec) {
                     releaseBitmapLater(scope, oldPreview, 180L)
                 },
                 onPick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                onModeChange = { mode = it },
                 onScaleChange = { scale = it },
                 onPositionChange = { verticalPosition = it },
-                onClearAreaChange = { clearAreaRatio = it }, // 新增回调
-                onBlurRadiusChange = { edgeBlurRadius = it }, // 新增回调
+                onClearAreaChange = { clearAreaRatio = it },
+                onBlurRadiusChange = { edgeBlurRadius = it },
                 onSave = {
                     val uri = selectedUri
                     if (uri != null && !processing) {
@@ -279,7 +262,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
                             var output: Bitmap? = null
                             try {
                                 output = withContext(Dispatchers.IO) { 
-                                    renderFullSize(context, uri, screen, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
                                 }
                                 val saved = withContext(Dispatchers.IO) { saveToPictures(context, output!!) }
                                 statusMessage = if (saved != null) "已保存到相册 · Pictures/WallExtend" else "保存失败，请检查存储空间后重试。"
@@ -301,7 +284,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
                             var output: Bitmap? = null
                             try {
                                 output = withContext(Dispatchers.IO) { 
-                                    renderFullSize(context, uri, screen, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                    renderFullSize(context, uri, screen, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
                                 }
                                 withContext(Dispatchers.IO) {
                                     WallpaperManager.getInstance(context).setBitmap(
@@ -338,28 +321,22 @@ private suspend fun renderFullSize(
     context: Context,
     uri: Uri,
     screen: ScreenSpec,
-    mode: FillMode,
     scale: Float,
     verticalPosition: Float,
-    clearAreaRatio: Float,    // 接收参数
-    edgeBlurRadius: Float     // 接收参数
+    clearAreaRatio: Float,
+    edgeBlurRadius: Float
 ): Bitmap = withContext(Dispatchers.IO) {
     val loaded = PhotoLoader.load(context, uri, minOf(5200, maxOf(screen.heightPx, screen.widthPx) * 2))
     try {
-        if (mode == FillMode.ADVANCED_BLUR) {
-            WallpaperProcessor.render(
-                loaded.bitmap, screen.widthPx, screen.heightPx, mode, scale, verticalPosition,
-                blurConfig = BlurMaskConfig(
-                    clearAreaRatio = clearAreaRatio,
-                    edgeBlurRadius = edgeBlurRadius.toInt(),
-                    scale = scale,
-                    verticalPosition = verticalPosition,
-                    tintColor = AndroidColor.argb(40, 0, 0, 0)
-                )
+        WallpaperProcessor.render(
+            loaded.bitmap, screen.widthPx, screen.heightPx, FillMode.ADVANCED_BLUR, scale, verticalPosition,
+            blurConfig = BlurMaskConfig(
+                clearAreaRatio = clearAreaRatio,
+                edgeBlurRadius = edgeBlurRadius.toInt(),
+                scale = scale,
+                verticalPosition = verticalPosition
             )
-        } else {
-            WallpaperProcessor.render(loaded.bitmap, screen.widthPx, screen.heightPx, mode, scale, verticalPosition)
-        }
+        )
     } finally {
         loaded.bitmap.recycle()
     }
@@ -418,19 +395,8 @@ private fun HomeScreen(screen: ScreenSpec, statusMessage: String, onPick: () -> 
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "让壁纸适配\n你的屏幕。",
-                color = Ink,
-                fontSize = 30.sp,
-                lineHeight = 38.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                "保留喜欢的画面，补齐屏幕留白。",
-                color = Muted,
-                fontSize = 14.sp,
-                lineHeight = 21.sp
-            )
+            Text("让壁纸适配\n你的屏幕。", color = Ink, fontSize = 30.sp, lineHeight = 38.sp, fontWeight = FontWeight.SemiBold)
+            Text("保留喜欢的画面，补齐屏幕留白。", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
         }
 
         Column(
@@ -462,13 +428,7 @@ private fun HomeScreen(screen: ScreenSpec, statusMessage: String, onPick: () -> 
             MiuixButton(onClick = onPick, modifier = Modifier.fillMaxWidth()) {
                 Text("选择照片", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             }
-            Text(
-                "照片只在本机处理，不会上传。",
-                color = Muted,
-                fontSize = 12.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Text("照片只在本机处理，不会上传。", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         }
         if (statusMessage.isNotBlank()) StatusLine(statusMessage)
     }
@@ -489,7 +449,6 @@ private fun EditorScreen(
     screen: ScreenSpec,
     previewBitmap: Bitmap?,
     originalDimensions: Pair<Int, Int>,
-    mode: FillMode,
     scale: Float,
     verticalPosition: Float,
     clearAreaRatio: Float,
@@ -498,7 +457,6 @@ private fun EditorScreen(
     statusMessage: String,
     onBack: () -> Unit,
     onPick: () -> Unit,
-    onModeChange: (FillMode) -> Unit,
     onScaleChange: (Float) -> Unit,
     onPositionChange: (Float) -> Unit,
     onClearAreaChange: (Float) -> Unit,
@@ -509,12 +467,7 @@ private fun EditorScreen(
     Column(modifier = Modifier.fillMaxSize().padding(top = 4.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
             Box(
-                Modifier
-                    .clip(CircleShape)
-                    .clickable(onClick = onBack)
-                    .size(38.dp)
-                    .background(White)
-                    .border(1.dp, Line, CircleShape),
+                Modifier.clip(CircleShape).clickable(onClick = onBack).size(38.dp).background(White).border(1.dp, Line, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text("‹", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Light)
@@ -524,12 +477,7 @@ private fun EditorScreen(
                 Text("预览将匹配当前屏幕比例", color = Muted, fontSize = 11.sp)
             }
             Box(
-                Modifier
-                    .clip(CircleShape)
-                    .clickable(onClick = onPick)
-                    .background(White)
-                    .border(1.dp, Line, CircleShape)
-                    .padding(horizontal = 13.dp, vertical = 9.dp)
+                Modifier.clip(CircleShape).clickable(onClick = onPick).background(White).border(1.dp, Line, CircleShape).padding(horizontal = 13.dp, vertical = 9.dp)
             ) {
                 Text("更换", color = Accent, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             }
@@ -542,33 +490,14 @@ private fun EditorScreen(
             DevicePreview(screen, previewBitmap)
             Text(
                 "${screen.resolutionLabel} · 原图 ${originalDimensions.first} × ${originalDimensions.second} px",
-                color = Muted,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 10.dp, bottom = 18.dp)
+                color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp, bottom = 18.dp)
             )
 
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(White)
-                    .border(1.dp, Line, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(White).border(1.dp, Line, RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(17.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("填充方式", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text(mode.detail, color = Muted, fontSize = 12.sp)
-                }
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FillMode.entries.forEach { item ->
-                        ModeChip(item = item, selected = mode == item, onClick = { onModeChange(item) })
-                    }
-                }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                // 画面缩放
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("画面缩放", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -576,17 +505,15 @@ private fun EditorScreen(
                         Text("${String.format(Locale.US, "%.2f", scale)}×", color = Accent, fontSize = 13.sp)
                     }
                     MiuixSlider(
-                        value = scale,
-                        onValueChange = onScaleChange,
-                        valueRange = 0.65f..1.35f,
-                        enabled = mode != FillMode.STRETCH,
-                        modifier = Modifier.fillMaxWidth()
+                        value = scale, onValueChange = onScaleChange, valueRange = 0.65f..1.35f, modifier = Modifier.fillMaxWidth()
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("更多画面", color = Muted, fontSize = 11.sp)
                         Text("放大主体", color = Muted, fontSize = 11.sp)
                     }
                 }
+                
+                // 上下位置
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("上下位置", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -596,18 +523,10 @@ private fun EditorScreen(
                                 verticalPosition < 0.35f -> "偏上"
                                 verticalPosition > 0.65f -> "偏下"
                                 else -> "居中"
-                            },
-                            color = Accent,
-                            fontSize = 13.sp
+                            }, color = Accent, fontSize = 13.sp
                         )
                     }
-                    MiuixSlider(
-                        value = verticalPosition,
-                        onValueChange = onPositionChange,
-                        valueRange = 0f..1f,
-                        enabled = mode != FillMode.STRETCH,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    MiuixSlider(value = verticalPosition, onValueChange = onPositionChange, valueRange = 0f..1f, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("靠上", color = Muted, fontSize = 11.sp)
                         Text("居中", color = Muted, fontSize = 11.sp)
@@ -615,56 +534,41 @@ private fun EditorScreen(
                     }
                 }
                 
-                // ====== 新增高级模糊滑动条 ======
-                if (mode == FillMode.ADVANCED_BLUR) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-                    
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("清晰覆盖范围", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            Spacer(Modifier.weight(1f))
-                            Text("${(clearAreaRatio * 100).toInt()}%", color = Accent, fontSize = 13.sp)
-                        }
-                        MiuixSlider(
-                            value = clearAreaRatio,
-                            onValueChange = onClearAreaChange,
-                            valueRange = 0.1f..0.9f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("大面积模糊", color = Muted, fontSize = 11.sp)
-                            Text("大面积清晰", color = Muted, fontSize = 11.sp)
-                        }
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                
+                // 调整模糊厚度
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("顶部模糊厚度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        Text("${edgeBlurRadius.toInt()}", color = Accent, fontSize = 13.sp)
                     }
-                    
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("边缘模糊程度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            Spacer(Modifier.weight(1f))
-                            Text("${edgeBlurRadius.toInt()}", color = Accent, fontSize = 13.sp)
-                        }
-                        MiuixSlider(
-                            value = edgeBlurRadius,
-                            onValueChange = onBlurRadiusChange,
-                            valueRange = 10f..80f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("轻微模糊", color = Muted, fontSize = 11.sp)
-                            Text("重度模糊", color = Muted, fontSize = 11.sp)
-                        }
+                    MiuixSlider(
+                        value = edgeBlurRadius, onValueChange = onBlurRadiusChange, valueRange = 10f..80f, modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("薄", color = Muted, fontSize = 11.sp)
+                        Text("厚", color = Muted, fontSize = 11.sp)
                     }
                 }
-                // ================================
-                
+
+                // 调整清晰范围（控制模糊过渡到哪里）
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("模糊过渡深度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        Text("${(clearAreaRatio * 100).toInt()}%", color = Accent, fontSize = 13.sp)
+                    }
+                    MiuixSlider(
+                        value = clearAreaRatio, onValueChange = onClearAreaChange, valueRange = 0.1f..0.9f, modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("过渡浅", color = Muted, fontSize = 11.sp)
+                        Text("过渡深", color = Muted, fontSize = 11.sp)
+                    }
+                }
             }
-            Text(
-                "边缘延展使用本地像素处理，不会生成新的场景内容。",
-                color = Muted,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 12.dp)
-            )
+            Spacer(Modifier.height(10.dp))
             if (statusMessage.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
                 StatusLine(statusMessage)
@@ -678,17 +582,8 @@ private fun EditorScreen(
                     Text(if (processing) "处理中…" else "保存图片", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(White)
-                    .border(1.dp, Line, RoundedCornerShape(16.dp))
-            ) {
-                Box(
-                    Modifier.fillMaxWidth().height(48.dp).clickable(enabled = !processing, onClick = onApply),
-                    contentAlignment = Alignment.Center
-                ) {
+            Box(Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).background(White).border(1.dp, Line, RoundedCornerShape(16.dp))) {
+                Box(Modifier.fillMaxWidth().height(48.dp).clickable(enabled = !processing, onClick = onApply), contentAlignment = Alignment.Center) {
                     Text(if (processing) "请稍候…" else "应用壁纸", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                 }
             }
@@ -713,19 +608,11 @@ private fun DevicePreview(screen: ScreenSpec, bitmap: Bitmap?) {
                 .background(Color(0xFFF2F2F7))
         ) {
             if (bitmap != null) {
-                Image(
-                    bitmap.asImageBitmap(),
-                    contentDescription = "Wallpaper preview",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.FillBounds
-                )
+                Image(bitmap.asImageBitmap(), contentDescription = "Wallpaper preview", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
             } else {
                 Box(Modifier.fillMaxSize().background(Color(0xFFE5E5EA)))
             }
-            Column(
-                Modifier.fillMaxSize().padding(top = 34.dp, bottom = 17.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(Modifier.fillMaxSize().padding(top = 34.dp, bottom = 17.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(dateLabel, color = White.copy(alpha = 0.94f), fontSize = 9.sp, fontWeight = FontWeight.Medium)
                 Text("9:41", color = White, fontSize = 34.sp, lineHeight = 39.sp, fontWeight = FontWeight.Light)
                 Spacer(Modifier.weight(1f))
@@ -736,23 +623,6 @@ private fun DevicePreview(screen: ScreenSpec, bitmap: Bitmap?) {
             }
             Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 5.dp).width(76.dp).height(3.dp).clip(CircleShape).background(White.copy(alpha = 0.85f)))
         }
-    }
-}
-
-@Composable
-private fun ModeChip(item: FillMode, selected: Boolean, onClick: () -> Unit) {
-    val background = if (selected) Color(0xFFE5F1FF) else SecondarySurface
-    val foreground = if (selected) Color(0xFF0066CC) else Ink
-    Box(
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(background)
-            .border(1.dp, if (selected) Color(0xFFB8D8FF) else Color.Transparent, CircleShape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(item.title, color = foreground, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
     }
 }
 
