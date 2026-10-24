@@ -14,7 +14,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 enum class FillMode(val title: String, val detail: String) {
-    ADVANCED_BLUR("高级渐变模糊", "上下留白延展，主体保留")
+    ADVANCED_BLUR("高级渐变模糊", "延展边缘，一次函数渐变过渡")
 }
 
 data class BlurMaskConfig(
@@ -40,7 +40,7 @@ object WallpaperProcessor {
         val canvas = Canvas(result)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
 
-        drawAdvancedBlur(canvas, source, width, height, blurConfig)
+        drawAdvancedBlur(canvas, source, width, height, scale, verticalPosition, blurConfig)
         
         return result
     }
@@ -50,91 +50,104 @@ object WallpaperProcessor {
         source: Bitmap,
         width: Int,
         height: Int,
+        zoom: Float,
+        position: Float,
         config: BlurMaskConfig
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         
-        // --- 1. 绘制底层模糊背景 (Full Cover) ---
-        // 先把原图按铺满屏幕的比例缩放并居中，作为背景
-        val bgFactor = max(width.toFloat() / source.width, height.toFloat() / source.height)
-        val bgWidth = source.width * bgFactor
-        val bgHeight = source.height * bgFactor
-        val bgLeft = (width - bgWidth) / 2f
-        val bgTop = (height - bgHeight) / 2f
-        val bgRect = RectF(bgLeft, bgTop, bgLeft + bgWidth, bgTop + bgHeight)
-
-        // 创建一个临时画布画背景
-        val bgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val bgCanvas = Canvas(bgBitmap)
-        bgCanvas.drawBitmap(source, null, bgRect, paint)
-
-        // 对背景进行重度模糊
-        val blurredBg = gaussianBlur(bgBitmap, config.edgeBlurRadius)
-        canvas.drawBitmap(blurredBg, 0f, 0f, paint)
-        
-        if (blurredBg !== bgBitmap) blurredBg.recycle()
-        bgBitmap.recycle()
-
-        // --- 2. 计算前景原图的位置 ---
-        // 按照原图的宽度铺满屏幕（结合 scale 缩放）
-        val factor = width.toFloat() / source.width * config.scale
+        // 1. 完全复用你原代码的宽高计算
+        val factor = width.toFloat() / source.width * zoom
         val drawWidth = source.width * factor
         val drawHeight = source.height * factor
         val left = (width - drawWidth) / 2f
-        val top = (height - drawHeight) * config.verticalPosition
-        val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
+        val top = (height - drawHeight) * position
+        val bottom = top + drawHeight
 
-        // --- 3. 绘制前景原图并添加渐变融合 ---
-        val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val fgCanvas = Canvas(fgBitmap)
+        // 2. 先画上边缘延展区（带模糊与渐变）
+        if (top > 0f) {
+            drawBlurredBand(canvas, source, width, top, true, config.edgeBlurRadius, config.clearAreaRatio, paint)
+        }
         
-        // 绘制清晰的原始图片
-        fgCanvas.drawBitmap(source, null, drawRect, paint)
-        
-        // 计算渐变遮罩（让边缘融化进背景）
-        // clearAreaRatio 越大，原图清晰的部分越多，边缘渐隐部分越短
-        val fadeHeight = (drawHeight * (1f - config.clearAreaRatio)) / 2f
-        
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        maskPaint.shader = LinearGradient(
-            0f, top, 0f, top + drawHeight,
-            intArrayOf(
-                Color.TRANSPARENT, // 图片顶部：完全透明（露出背景模糊）
-                Color.BLACK,       // 渐变结束：完全不透明（显示清晰原图）
-                Color.BLACK,       // 渐变开始：完全不透明
-                Color.TRANSPARENT  // 图片底部：完全透明（露出背景模糊）
-            ),
-            floatArrayOf(
-                0f, 
-                fadeHeight / drawHeight, 
-                (drawHeight - fadeHeight) / drawHeight, 
-                1f
-            ),
-            Shader.TileMode.CLAMP
-        )
-        maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
-        
-        // 盖到背景上
-        canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
-        fgBitmap.recycle()
+        // 3. 再画下边缘延展区
+        if (bottom < height) {
+            drawBlurredBand(canvas, source, width, height - bottom, false, config.edgeBlurRadius, config.clearAreaRatio, paint, topOffset = bottom)
+        }
+
+        // 4. 最后画上原图主体
+        canvas.drawBitmap(source, null, RectF(left, top, left + drawWidth, top + drawHeight), paint)
     }
 
     /**
-     * 真正的高斯模糊（3次 BoxBlur 叠加逼近高斯）
+     * 核心改进：保留原代码的 2.5% 拉伸逻辑，但在其上叠加高斯模糊和边缘渐变遮罩
      */
+    private fun drawBlurredBand(
+        canvas: Canvas,
+        source: Bitmap,
+        width: Int,
+        gapHeight: Float,
+        topBand: Boolean,
+        blurRadius: Int,
+        clearAreaRatio: Float,
+        paint: Paint,
+        topOffset: Float = 0f
+    ) {
+        if (gapHeight <= 0f) return
+        
+        // 截取 2.5% 的窄条（复用原代码逻辑）
+        val sliceHeight = max(1, (source.height * 0.025f).roundToInt()).coerceAtMost(source.height)
+        val sourceY = if (topBand) 0 else source.height - sliceHeight
+        val strip = Bitmap.createBitmap(source, 0, sourceY, source.width, sliceHeight)
+
+        // 把这个窄条模糊掉
+        val blurredStrip = gaussianBlur(strip, blurRadius)
+        strip.recycle()
+
+        // 计算绘制区域
+        val destTop = if (topBand) 0f else topOffset
+        val destBottom = if (topBand) gapHeight else topOffset + gapHeight
+        val destRect = RectF(0f, destTop, width.toFloat(), destBottom)
+
+        // 核心：用一次函数渐变做遮罩！
+        // 让模糊条靠近屏幕边缘的地方不透明（显实），靠近原图接缝的地方变透明（融入原图）
+        val maskBitmap = Bitmap.createBitmap(width, gapHeight.roundToInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        val maskCanvas = Canvas(maskBitmap)
+        
+        // 画上模糊条
+        maskCanvas.drawBitmap(blurredStrip, null, RectF(0f, 0f, width.toFloat(), maskBitmap.height.toFloat()), paint)
+        
+        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val gradient = if (topBand) {
+            // 顶部：从屏幕顶端（不透明）向接缝处（透明）渐变
+            LinearGradient(0f, 0f, 0f, gapHeight, Color.BLACK, Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        } else {
+            // 底部：从接缝处（透明）向屏幕底端（不透明）渐变
+            LinearGradient(0f, 0f, 0f, gapHeight, Color.TRANSPARENT, Color.BLACK, Shader.TileMode.CLAMP)
+        }
+        maskPaint.shader = gradient
+        maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        
+        // 用渐变把模糊条“抠”出来
+        maskCanvas.drawRect(0f, 0f, width.toFloat(), maskBitmap.height.toFloat(), maskPaint)
+
+        // 将处理好的渐变模糊条盖到屏幕上
+        canvas.drawBitmap(maskBitmap, null, destRect, paint)
+
+        if (blurredStrip !== strip) blurredStrip.recycle()
+        maskBitmap.recycle()
+    }
+
+    // 高斯模糊底层实现
     private fun gaussianBlur(source: Bitmap, radius: Int): Bitmap {
-        val scale = 0.2f // 降低分辨率大幅提升性能，并让模糊更丝滑
+        val scale = 0.2f
         val smallWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
         val smallHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(source, smallWidth, smallHeight, true)
 
-        // 3次 BoxBlur 叠加消除鬼影
         var blurred = boxBlur(scaled, radius / 2)
         blurred = boxBlur(blurred, radius / 2)
         blurred = boxBlur(blurred, radius / 2)
 
-        // 放大回原尺寸
         val result = Bitmap.createScaledBitmap(blurred, source.width, source.height, true)
         
         if (scaled !== source) scaled.recycle()
