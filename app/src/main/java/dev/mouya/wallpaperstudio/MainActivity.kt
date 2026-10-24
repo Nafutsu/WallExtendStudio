@@ -3,14 +3,14 @@ package dev.mouya.wallpaperstudio
 import android.app.WallpaperManager
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
-import android.view.WindowManager
-import android.content.Intent
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -40,7 +40,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import top.yukonga.miuix.kmp.basic.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -59,26 +58,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.roundToInt
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Button as MiuixButton
-import top.yukonga.miuix.kmp.basic.Slider as MiuixSlider
-import top.yukonga.miuix.kmp.theme.ColorSchemeMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.ThemeController
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.Button as MiuixButton
+import top.yukonga.miuix.kmp.basic.Slider as MiuixSlider
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ThemeController
+
+// 引入原生的 Color 并使用别名防止冲突
+import android.graphics.Color as AndroidColor
 
 private val CanvasColor = Color(0xFFF5F5F7)
 private val Ink = Color(0xFF1D1D1F)
@@ -144,6 +147,11 @@ private fun WallExtendApp(screen: ScreenSpec) {
     var verticalPosition by remember { mutableFloatStateOf(0.5f) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
+    // ====== 新增：高级模糊参数 ======
+    var clearAreaRatio by remember { mutableFloatStateOf(0.5f) }
+    var edgeBlurRadius by remember { mutableFloatStateOf(35f) }
+    // ================================
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             try {
@@ -165,6 +173,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                     mode = FillMode.EDGE
                     scale = 1f
                     verticalPosition = 0.5f
+                    clearAreaRatio = 0.5f // 重置高级参数
+                    edgeBlurRadius = 35f  // 重置高级参数
                     releaseBitmapLater(scope, oldPhoto, 250L)
                     releaseBitmapLater(scope, oldPreview, 180L)
                 } catch (error: Exception) {
@@ -177,7 +187,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
         }
     }
 
-    LaunchedEffect(photoBitmap, mode, scale, verticalPosition, screen.widthPx, screen.heightPx) {
+    // 加入新参数，让其变化时能触发预览重绘
+    LaunchedEffect(photoBitmap, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius, screen.widthPx, screen.heightPx) {
         val source = photoBitmap ?: run {
             val oldPreview = previewBitmap
             previewBitmap = null
@@ -189,7 +200,20 @@ private fun WallExtendApp(screen: ScreenSpec) {
         val previewHeight = (previewWidth * screen.heightPx.toFloat() / screen.widthPx).roundToInt().coerceAtLeast(1)
         val ownerContext = currentCoroutineContext()
         val rendered = withContext(Dispatchers.Default + NonCancellable) {
-            WallpaperProcessor.render(source, previewWidth, previewHeight, mode, scale, verticalPosition)
+            if (mode == FillMode.ADVANCED_BLUR) {
+                WallpaperProcessor.render(
+                    source, previewWidth, previewHeight, mode, scale, verticalPosition,
+                    blurConfig = BlurMaskConfig(
+                        clearAreaRatio = clearAreaRatio,
+                        edgeBlurRadius = edgeBlurRadius.toInt(),
+                        scale = scale,
+                        verticalPosition = verticalPosition,
+                        tintColor = AndroidColor.argb(40, 0, 0, 0) // 预览时轻微压暗
+                    )
+                )
+            } else {
+                WallpaperProcessor.render(source, previewWidth, previewHeight, mode, scale, verticalPosition)
+            }
         }
         if (!ownerContext.isActive) {
             rendered.recycle()
@@ -226,6 +250,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                 mode = mode,
                 scale = scale,
                 verticalPosition = verticalPosition,
+                clearAreaRatio = clearAreaRatio,   // 传给 UI
+                edgeBlurRadius = edgeBlurRadius,   // 传给 UI
                 processing = processing,
                 statusMessage = statusMessage,
                 onBack = {
@@ -242,6 +268,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                 onModeChange = { mode = it },
                 onScaleChange = { scale = it },
                 onPositionChange = { verticalPosition = it },
+                onClearAreaChange = { clearAreaRatio = it }, // 新增回调
+                onBlurRadiusChange = { edgeBlurRadius = it }, // 新增回调
                 onSave = {
                     val uri = selectedUri
                     if (uri != null && !processing) {
@@ -250,7 +278,9 @@ private fun WallExtendApp(screen: ScreenSpec) {
                         scope.launch {
                             var output: Bitmap? = null
                             try {
-                                output = withContext(Dispatchers.IO) { renderFullSize(context, uri, screen, mode, scale, verticalPosition) }
+                                output = withContext(Dispatchers.IO) { 
+                                    renderFullSize(context, uri, screen, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                }
                                 val saved = withContext(Dispatchers.IO) { saveToPictures(context, output!!) }
                                 statusMessage = if (saved != null) "已保存到相册 · Pictures/WallExtend" else "保存失败，请检查存储空间后重试。"
                             } catch (error: Exception) {
@@ -270,7 +300,9 @@ private fun WallExtendApp(screen: ScreenSpec) {
                         scope.launch {
                             var output: Bitmap? = null
                             try {
-                                output = withContext(Dispatchers.IO) { renderFullSize(context, uri, screen, mode, scale, verticalPosition) }
+                                output = withContext(Dispatchers.IO) { 
+                                    renderFullSize(context, uri, screen, mode, scale, verticalPosition, clearAreaRatio, edgeBlurRadius) 
+                                }
                                 withContext(Dispatchers.IO) {
                                     WallpaperManager.getInstance(context).setBitmap(
                                         output!!,
@@ -308,11 +340,26 @@ private suspend fun renderFullSize(
     screen: ScreenSpec,
     mode: FillMode,
     scale: Float,
-    verticalPosition: Float
+    verticalPosition: Float,
+    clearAreaRatio: Float,    // 接收参数
+    edgeBlurRadius: Float     // 接收参数
 ): Bitmap = withContext(Dispatchers.IO) {
     val loaded = PhotoLoader.load(context, uri, minOf(5200, maxOf(screen.heightPx, screen.widthPx) * 2))
     try {
-        WallpaperProcessor.render(loaded.bitmap, screen.widthPx, screen.heightPx, mode, scale, verticalPosition)
+        if (mode == FillMode.ADVANCED_BLUR) {
+            WallpaperProcessor.render(
+                loaded.bitmap, screen.widthPx, screen.heightPx, mode, scale, verticalPosition,
+                blurConfig = BlurMaskConfig(
+                    clearAreaRatio = clearAreaRatio,
+                    edgeBlurRadius = edgeBlurRadius.toInt(),
+                    scale = scale,
+                    verticalPosition = verticalPosition,
+                    tintColor = AndroidColor.argb(40, 0, 0, 0)
+                )
+            )
+        } else {
+            WallpaperProcessor.render(loaded.bitmap, screen.widthPx, screen.heightPx, mode, scale, verticalPosition)
+        }
     } finally {
         loaded.bitmap.recycle()
     }
@@ -445,6 +492,8 @@ private fun EditorScreen(
     mode: FillMode,
     scale: Float,
     verticalPosition: Float,
+    clearAreaRatio: Float,
+    edgeBlurRadius: Float,
     processing: Boolean,
     statusMessage: String,
     onBack: () -> Unit,
@@ -452,6 +501,8 @@ private fun EditorScreen(
     onModeChange: (FillMode) -> Unit,
     onScaleChange: (Float) -> Unit,
     onPositionChange: (Float) -> Unit,
+    onClearAreaChange: (Float) -> Unit,
+    onBlurRadiusChange: (Float) -> Unit,
     onSave: () -> Unit,
     onApply: () -> Unit
 ) {
@@ -527,7 +578,7 @@ private fun EditorScreen(
                     MiuixSlider(
                         value = scale,
                         onValueChange = onScaleChange,
-                        valueRange = 0.75f..1.25f,
+                        valueRange = 0.65f..1.35f,
                         enabled = mode != FillMode.STRETCH,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -563,6 +614,49 @@ private fun EditorScreen(
                         Text("靠下", color = Muted, fontSize = 11.sp)
                     }
                 }
+                
+                // ====== 新增高级模糊滑动条 ======
+                if (mode == FillMode.ADVANCED_BLUR) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                    
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("清晰覆盖范围", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.weight(1f))
+                            Text("${(clearAreaRatio * 100).toInt()}%", color = Accent, fontSize = 13.sp)
+                        }
+                        MiuixSlider(
+                            value = clearAreaRatio,
+                            onValueChange = onClearAreaChange,
+                            valueRange = 0.1f..0.9f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("大面积模糊", color = Muted, fontSize = 11.sp)
+                            Text("大面积清晰", color = Muted, fontSize = 11.sp)
+                        }
+                    }
+                    
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("边缘模糊程度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.weight(1f))
+                            Text("${edgeBlurRadius.toInt()}", color = Accent, fontSize = 13.sp)
+                        }
+                        MiuixSlider(
+                            value = edgeBlurRadius,
+                            onValueChange = onBlurRadiusChange,
+                            valueRange = 10f..80f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("轻微模糊", color = Muted, fontSize = 11.sp)
+                            Text("重度模糊", color = Muted, fontSize = 11.sp)
+                        }
+                    }
+                }
+                // ================================
+                
             }
             Text(
                 "边缘延展使用本地像素处理，不会生成新的场景内容。",
