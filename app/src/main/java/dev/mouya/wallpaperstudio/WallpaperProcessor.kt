@@ -1,4 +1,4 @@
-package package dev.mouya.wallpaperstudio
+package dev.mouya.wallpaperstudio
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -29,20 +29,10 @@ enum class FillMode(val title: String, val detail: String) {
  * 参数容器：对应需求“加入手动调整模糊覆盖范围”和“调整参数” 
  */
 data class BlurMaskConfig(
-    // 1. 清晰区域占比 (0.0 - 1.0)：屏幕中间清晰区域占整体高度的比例
-    // 控制“手动调整模糊覆盖范围”
     val clearAreaRatio: Float = 0.5f,
-    
-    // 2. 边缘最大模糊半径：控制边缘的模糊程度
     val edgeBlurRadius: Int = 30,
-    
-    // 3. 额外色彩叠加：用于图3那种紫红氛围感，或图2的暗角托底
     val tintColor: Int = Color.TRANSPARENT,
-    
-    // 4. 全局缩放：调整主体大小
     val scale: Float = 1f,
-    
-    // 5. 垂直位置：调整主体在屏幕上的上下位置
     val verticalPosition: Float = 0.5f
 )
 
@@ -55,7 +45,6 @@ object WallpaperProcessor {
         mode: FillMode,
         scale: Float = 1f,
         verticalPosition: Float = 0.5f,
-        // 高级模式专用参数
         blurConfig: BlurMaskConfig = BlurMaskConfig()
     ): Bitmap {
         require(width > 0 && height > 0) { "目标尺寸无效" }
@@ -76,10 +65,6 @@ object WallpaperProcessor {
         return result
     }
 
-    /**
-     * 核心实现：高级渐变模糊（还原图2、图3质感）
-     * 使用一次函数（线性渐变）控制遮罩，实现模糊程度的递增/递减
-     */
     private fun drawAdvancedBlur(
         canvas: Canvas,
         source: Bitmap,
@@ -89,7 +74,6 @@ object WallpaperProcessor {
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         
-        // 1. 计算原图 Cover 模式的绘制区域
         val factor = max(width.toFloat() / source.width, height.toFloat() / source.height) * config.scale
         val drawWidth = source.width * factor
         val drawHeight = source.height * factor
@@ -97,8 +81,6 @@ object WallpaperProcessor {
         val top = (height - drawHeight) * config.verticalPosition
         val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
 
-        // 2. 生成重度模糊的底层背景
-        // 为了防止边缘漏出黑边，先稍微放大一点绘制尺寸
         val bgRect = RectF(
             left - width * 0.1f, 
             top - height * 0.1f, 
@@ -109,27 +91,22 @@ object WallpaperProcessor {
         canvas.drawBitmap(heavyBlur, null, bgRect, paint)
         if (heavyBlur !== source) heavyBlur.recycle()
 
-        // 3. 计算渐变遮罩的坐标与尺寸
         val clearTop = height * (1f - config.clearAreaRatio) / 2f
         val clearBottom = height - clearTop
 
-        // 4. 准备前景图（原图），并应用一次函数渐变遮罩（PorterDuff）
         val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val fgCanvas = Canvas(fgBitmap)
         
-        // 把清晰的原图画上去
         fgCanvas.drawBitmap(source, null, drawRect, paint)
         
-        // 构建线性渐变：从透明 -> 不透明 -> 不透明 -> 透明
-        // 对应群聊里说的“模糊程度递增及递减（一次函数）”
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         maskPaint.shader = LinearGradient(
             0f, 0f, 0f, height.toFloat(),
             intArrayOf(
-                Color.TRANSPARENT, // 顶部边缘：完全透明（露出底部的模糊背景）
-                Color.BLACK,       // 上边界：完全不透明（显示清晰原图）
-                Color.BLACK,       // 下边界：完全不透明（显示清晰原图）
-                Color.TRANSPARENT  // 底部边缘：完全透明（露出底部的模糊背景）
+                Color.TRANSPARENT, 
+                Color.BLACK,       
+                Color.BLACK,       
+                Color.TRANSPARENT  
             ),
             floatArrayOf(
                 0f, 
@@ -139,15 +116,12 @@ object WallpaperProcessor {
             ),
             Shader.TileMode.CLAMP
         )
-        // 使用 DST_IN 模式，用渐变遮罩裁剪出中间清晰、上下边缘渐隐的前景图
         maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
         
-        // 将处理好边缘渐隐的原图盖到背景上
         canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
         fgBitmap.recycle()
 
-        // 5. 叠加氛围颜色（手动调整参数控制）
         if (Color.alpha(config.tintColor) > 0) {
             canvas.drawColor(config.tintColor)
         }
@@ -256,7 +230,6 @@ object WallpaperProcessor {
         canvas.drawBitmap(source, null, RectF(left, top, left + drawWidth, top + drawHeight), paint)
     }
 
-    // 原版基础模糊（保留用于 BLUR 模式）
     private fun drawBlurFill(
         canvas: Canvas,
         source: Bitmap,
@@ -299,14 +272,10 @@ object WallpaperProcessor {
         lowRes.recycle()
     }
 
-    /**
-     * 优化后的滑动窗口高斯/均值模糊
-     * 加入了 maxSize 限制，防止对大图直接进行 CPU 模糊导致 OOM 或卡顿
-     */
+    // 修复后的 boxBlur
     private fun boxBlur(source: Bitmap, radius: Int, maxSize: Int = 1080): Bitmap {
         val r = radius.coerceAtLeast(1)
         
-        // 如果图片过大，先降采样，大幅提升性能
         val scale = if (max(source.width, source.height) > maxSize) {
             maxSize.toFloat() / max(source.width, source.height)
         } else 1f
@@ -325,13 +294,12 @@ object WallpaperProcessor {
         val output = IntArray(width * height)
         workBitmap.getPixels(input, 0, width, 0, 0, width, height)
 
-        // 1. 水平方向模糊 (滑动窗口优化，复杂度 O(n))
+        // 1. 水平方向模糊
         for (y in 0 until height) {
             val row = y * width
             var a = 0; var red = 0; var green = 0; var blue = 0
             var count = 0
             
-            // 初始化最左侧窗口
             for (x in 0..min(width - 1, r)) {
                 val color = input[row + x]
                 a += Color.alpha(color); red += Color.red(color)
@@ -341,7 +309,6 @@ object WallpaperProcessor {
             for (x in 0 until width) {
                 horizontal[row + x] = Color.argb(a / count, red / count, green / count, blue / count)
                 
-                // 滑动窗口：移除左边，加入右边
                 val removeX = x - r
                 if (removeX >= 0) {
                     val color = input[row + removeX]
@@ -357,12 +324,11 @@ object WallpaperProcessor {
             }
         }
 
-        // 2. 垂直方向模糊 (滑动窗口优化，复杂度 O(n))
+        // 2. 垂直方向模糊
         for (x in 0 until width) {
             var a = 0; var red = 0; var green = 0; var blue = 0
             var count = 0
             
-            // 初始化最上方窗口
             for (y in 0..min(height - 1, r)) {
                 val color = horizontal[y * width + x]
                 a += Color.alpha(color); red += Color.red(color)
@@ -372,7 +338,6 @@ object WallpaperProcessor {
             for (y in 0 until height) {
                 output[y * width + x] = Color.argb(a / count, red / count, green / count, blue / count)
                 
-                // 滑动窗口：移除上边，加入下边
                 val removeY = y - r
                 if (removeY >= 0) {
                     val color = horizontal[removeY * width + x]
@@ -392,7 +357,6 @@ object WallpaperProcessor {
             it.setPixels(output, 0, width, 0, 0, width, height)
         }
         
-        // 恢复至目标尺寸
         val result = if (scale < 1f) {
             Bitmap.createScaledBitmap(blurred, source.width, source.height, true).also {
                 if (it !== blurred) blurred.recycle()
@@ -403,214 +367,5 @@ object WallpaperProcessor {
         }
         
         return result
-    }
-}
-
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
-import android.graphics.RectF
-import android.graphics.Shader
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.roundToInt
-
-enum class FillMode(val title: String, val detail: String) {
-    ADVANCED_BLUR("高级渐变模糊", "上下留白延展，主体保留")
-}
-
-data class BlurMaskConfig(
-    val clearAreaRatio: Float = 0.6f, 
-    val edgeBlurRadius: Int = 60,     
-    val scale: Float = 1f,
-    val verticalPosition: Float = 0.5f
-)
-
-object WallpaperProcessor {
-    
-    fun render(
-        source: Bitmap,
-        width: Int,
-        height: Int,
-        mode: FillMode,
-        scale: Float = 1f,
-        verticalPosition: Float = 0.5f,
-        blurConfig: BlurMaskConfig = BlurMaskConfig()
-    ): Bitmap {
-        require(width > 0 && height > 0) { "目标尺寸无效" }
-        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(result)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-
-        drawAdvancedBlur(canvas, source, width, height, blurConfig)
-        
-        return result
-    }
-
-    private fun drawAdvancedBlur(
-        canvas: Canvas,
-        source: Bitmap,
-        width: Int,
-        height: Int,
-        config: BlurMaskConfig
-    ) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-        
-        // --- 1. 绘制底层模糊背景 (Full Cover) ---
-        // 先把原图按铺满屏幕的比例缩放并居中，作为背景
-        val bgFactor = max(width.toFloat() / source.width, height.toFloat() / source.height)
-        val bgWidth = source.width * bgFactor
-        val bgHeight = source.height * bgFactor
-        val bgLeft = (width - bgWidth) / 2f
-        val bgTop = (height - bgHeight) / 2f
-        val bgRect = RectF(bgLeft, bgTop, bgLeft + bgWidth, bgTop + bgHeight)
-
-        // 创建一个临时画布画背景
-        val bgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val bgCanvas = Canvas(bgBitmap)
-        bgCanvas.drawBitmap(source, null, bgRect, paint)
-
-        // 对背景进行重度模糊
-        val blurredBg = gaussianBlur(bgBitmap, config.edgeBlurRadius)
-        canvas.drawBitmap(blurredBg, 0f, 0f, paint)
-        
-        if (blurredBg !== bgBitmap) blurredBg.recycle()
-        bgBitmap.recycle()
-
-        // --- 2. 计算前景原图的位置 ---
-        // 按照原图的宽度铺满屏幕（结合 scale 缩放）
-        val factor = width.toFloat() / source.width * config.scale
-        val drawWidth = source.width * factor
-        val drawHeight = source.height * factor
-        val left = (width - drawWidth) / 2f
-        val top = (height - drawHeight) * config.verticalPosition
-        val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
-
-        // --- 3. 绘制前景原图并添加渐变融合 ---
-        val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val fgCanvas = Canvas(fgBitmap)
-        
-        // 绘制清晰的原始图片
-        fgCanvas.drawBitmap(source, null, drawRect, paint)
-        
-        // 计算渐变遮罩（让边缘融化进背景）
-        // clearAreaRatio 越大，原图清晰的部分越多，边缘渐隐部分越短
-        val fadeHeight = (drawHeight * (1f - config.clearAreaRatio)) / 2f
-        
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        maskPaint.shader = LinearGradient(
-            0f, top, 0f, top + drawHeight,
-            intArrayOf(
-                Color.TRANSPARENT, // 图片顶部：完全透明（露出背景模糊）
-                Color.BLACK,       // 渐变结束：完全不透明（显示清晰原图）
-                Color.BLACK,       // 渐变开始：完全不透明
-                Color.TRANSPARENT  // 图片底部：完全透明（露出背景模糊）
-            ),
-            floatArrayOf(
-                0f, 
-                fadeHeight / drawHeight, 
-                (drawHeight - fadeHeight) / drawHeight, 
-                1f
-            ),
-            Shader.TileMode.CLAMP
-        )
-        maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
-        
-        // 盖到背景上
-        canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
-        fgBitmap.recycle()
-    }
-
-    /**
-     * 真正的高斯模糊（3次 BoxBlur 叠加逼近高斯）
-     */
-    private fun gaussianBlur(source: Bitmap, radius: Int): Bitmap {
-        val scale = 0.2f // 降低分辨率大幅提升性能，并让模糊更丝滑
-        val smallWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
-        val smallHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(source, smallWidth, smallHeight, true)
-
-        // 3次 BoxBlur 叠加消除鬼影
-        var blurred = boxBlur(scaled, radius / 2)
-        blurred = boxBlur(blurred, radius / 2)
-        blurred = boxBlur(blurred, radius / 2)
-
-        // 放大回原尺寸
-        val result = Bitmap.createScaledBitmap(blurred, source.width, source.height, true)
-        
-        if (scaled !== source) scaled.recycle()
-        if (blurred !== scaled) blurred.recycle()
-        
-        return result
-    }
-
-    private fun boxBlur(source: Bitmap, radius: Int): Bitmap {
-        val r = radius.coerceAtLeast(1)
-        val width = source.width
-        val height = source.height
-        val input = IntArray(width * height)
-        val horizontal = IntArray(width * height)
-        val output = IntArray(width * height)
-        source.getPixels(input, 0, width, 0, 0, width, height)
-
-        for (y in 0 until height) {
-            val row = y * width
-            var a = 0; var red = 0; var green = 0; var blue = 0
-            var count = 0
-            for (x in 0..minOf(width - 1, r)) {
-                val color = input[row + x]
-                a += Color.alpha(color); red += Color.red(color)
-                green += Color.green(color); blue += Color.blue(color); count++
-            }
-            for (x in 0 until width) {
-                horizontal[row + x] = Color.argb(a / count, red / count, green / count, blue / count)
-                val removeX = x - r
-                if (removeX >= 0) {
-                    val color = input[row + removeX]
-                    a -= Color.alpha(color); red -= Color.red(color)
-                    green -= Color.green(color); blue -= Color.blue(color); count--
-                }
-                val addX = x + r + 1
-                if (addX < width) {
-                    val color = input[row + addX]
-                    a += Color.alpha(color); red += Color.red(color)
-                    green += Color.green(color); blue += Color.blue(color); count++
-                }
-            }
-        }
-
-        for (x in 0 until width) {
-            var a = 0; var red = 0; var green = 0; var blue = 0
-            var count = 0
-            for (y in 0..minOf(height - 1, r)) {
-                val color = horizontal[y * width + x]
-                a += Color.alpha(color); red += Color.red(color)
-                green += Color.green(color); blue += Color.blue(color); count++
-            }
-            for (y in 0 until height) {
-                output[y * width + x] = Color.argb(a / count, red / count, green / count, blue / count)
-                val removeY = y - r
-                if (removeY >= 0) {
-                    val color = horizontal[removeY * width + x]
-                    a -= Color.alpha(color); red -= Color.red(color)
-                    green -= Color.green(color); blue -= Color.blue(color); count--
-                }
-                val addY = y + r + 1
-                if (addY < height) {
-                    val color = horizontal[addY * width + x]
-                    a += Color.alpha(color); red += Color.red(color)
-                    green += Color.green(color); blue += Color.blue(color); count++
-                }
-            }
-        }
-
-        return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
-            it.setPixels(output, 0, width, 0, 0, width, height)
-        }
     }
 }
