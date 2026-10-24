@@ -10,17 +10,16 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** 只保留高级渐变模糊 */
 enum class FillMode(val title: String, val detail: String) {
-    ADVANCED_BLUR("高级渐变模糊", "仅模糊顶部区域，底部保持清晰")
+    ADVANCED_BLUR("高级渐变模糊", "保留主体，上下边缘延展与渐变模糊")
 }
 
-/** 参数容器 */
 data class BlurMaskConfig(
-    val clearAreaRatio: Float = 0.5f, // 底部清晰区域占比
-    val edgeBlurRadius: Int = 40,     // 模糊厚度（半径）
+    val clearAreaRatio: Float = 0.5f, 
+    val edgeBlurRadius: Int = 40,     
     val scale: Float = 1f,
     val verticalPosition: Float = 0.5f
 )
@@ -41,7 +40,6 @@ object WallpaperProcessor {
         val canvas = Canvas(result)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
 
-        // 目前只有这一种模式
         drawAdvancedBlur(canvas, source, width, height, blurConfig)
         
         return result
@@ -56,47 +54,72 @@ object WallpaperProcessor {
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         
-        // 1. 计算原图 Cover 模式的绘制区域
-        val factor = max(width.toFloat() / source.width, height.toFloat() / source.height) * config.scale
-        val drawWidth = source.width * factor
-        val drawHeight = source.height * factor
-        val left = (width - drawWidth) / 2f
-        val top = (height - drawHeight) * config.verticalPosition
-        val drawRect = RectF(left, top, left + drawWidth, top + drawHeight)
-
-        // 2. 绘制底层：稍微放大一点的重度模糊背景
-        val bgRect = RectF(
-            left - width * 0.1f, 
-            top - height * 0.1f, 
-            left + drawWidth + width * 0.1f, 
-            top + drawHeight + height * 0.1f
-        )
-        // 这里的半径调大了，让顶部模糊更厚
-        val heavyBlur = boxBlur(source, config.edgeBlurRadius, max(width, height))
-        canvas.drawBitmap(heavyBlur, null, bgRect, paint)
-        if (heavyBlur !== source) heavyBlur.recycle()
-
-        // 3. 计算渐变遮罩坐标
-        // 我们希望底部保持完全清晰，只在顶部留出模糊渐变的过渡
-        val clearTop = height * (1f - config.clearAreaRatio)
+        // --- 1. 计算前景原图的位置（限制最大高度，强制留出上下空间） ---
+        // 即使原图比屏幕长，我们也最多只让它占屏幕高度的 75% ~ 85%，这样上下才有空隙做延展
+        val maxForegroundHeight = height * 0.85f
+        val maxForegroundWidth = width * 0.95f
         
+        var fgWidth = source.width.toFloat()
+        var fgHeight = source.height.toFloat()
+        
+        // 按比例缩放原图，使其适应屏幕
+        val scaleFactor = min(maxForegroundWidth / fgWidth, maxForegroundHeight / fgHeight) * config.scale
+        fgWidth *= scaleFactor
+        fgHeight *= scaleFactor
+        
+        val left = (width - fgWidth) / 2f
+        val top = (height - fgHeight) * config.verticalPosition
+        val drawRect = RectF(left, top, left + fgWidth, top + fgHeight)
+
+        // --- 2. 构建高级背景层（边缘1像素拉伸 + 高斯模糊） ---
+        // 为了模拟 iOS 的背景，我们截取原图最顶部的 1 像素，和底部的 1 像素，分别向上和向下拉伸
+        val bgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val bgCanvas = Canvas(bgBitmap)
+        
+        val topRow = Bitmap.createBitmap(source, 0, 0, source.width, 1)
+        val bottomRow = Bitmap.createBitmap(source, 0, source.height - 1, source.width, 1)
+        
+        // 将顶部的 1 像素拉伸填满上半部分
+        bgCanvas.drawBitmap(topRow, null, RectF(0f, 0f, width.toFloat(), top + 2f), paint)
+        // 将底部的 1 像素拉伸填满下半部分
+        bgCanvas.drawBitmap(bottomRow, null, RectF(0f, top + fgHeight - 2f, width.toFloat(), height.toFloat()), paint)
+        
+        topRow.recycle()
+        bottomRow.recycle()
+
+        // 对这个拉伸的背景进行真正的高斯模糊
+        val blurredBg = gaussianBlur(bgBitmap, config.edgeBlurRadius)
+        canvas.drawBitmap(blurredBg, 0f, 0f, paint)
+        if (blurredBg !== bgBitmap) blurredBg.recycle()
+        bgBitmap.recycle()
+
+        // --- 3. 绘制前景原图，并应用一次函数渐变遮罩 ---
         val fgBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val fgCanvas = Canvas(fgBitmap)
         
-        fgCanvas.drawBitmap(source, null, drawRect, paint)
+        // 画上清晰的主体（稍微做一点圆角处理，显得更高级，如果要直角可以把圆角去掉）
+        val roundedRect = RectF(drawRect)
+        val cornerRadius = width * 0.08f
+        fgCanvas.drawRoundRect(roundedRect, cornerRadius, cornerRadius, paint)
         
-        // 构建线性渐变：顶部透明（显示模糊） -> 中间不透明（显示原图） -> 底部完全不透明
+        // 构建渐变遮罩：让原图的上下边缘逐渐融入模糊背景
+        val fadeDistance = (fgHeight * (1f - config.clearAreaRatio)) / 2f
+        val fadeTop = top + fadeDistance
+        val fadeBottom = top + fgHeight - fadeDistance
+
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         maskPaint.shader = LinearGradient(
-            0f, 0f, 0f, height.toFloat(),
+            0f, top, 0f, top + fgHeight,
             intArrayOf(
-                Color.TRANSPARENT, // 顶部边缘：透明，露出下面模糊的背景
-                Color.BLACK,       // 过渡结束：不透明，显示清晰原图
-                Color.BLACK        // 底部：保持不透明，完全不模糊
+                Color.TRANSPARENT, // 原图最顶部：完全透明（融入背景）
+                Color.BLACK,       // 过渡到主体：显示原图
+                Color.BLACK,       // 主体下部：显示原图
+                Color.TRANSPARENT  // 原图最底部：完全透明（融入背景）
             ),
             floatArrayOf(
                 0f, 
-                clearTop / height, 
+                fadeDistance / fgHeight, 
+                (fgHeight - fadeDistance) / fgHeight, 
                 1f
             ),
             Shader.TileMode.CLAMP
@@ -104,32 +127,44 @@ object WallpaperProcessor {
         maskPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         fgCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
         
-        // 将处理好的前景盖上去（去掉了之前的整体压暗代码）
+        // 将处理好的前景盖上去
         canvas.drawBitmap(fgBitmap, 0f, 0f, paint)
         fgBitmap.recycle()
     }
 
-    // 保留了优化后的模糊算法
-    private fun boxBlur(source: Bitmap, radius: Int, maxSize: Int = 1080): Bitmap {
-        val r = radius.coerceAtLeast(1)
-        
-        val scale = if (max(source.width, source.height) > maxSize) {
-            maxSize.toFloat() / max(source.width, source.height)
-        } else 1f
-        
-        val workWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
-        val workHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
-        
-        val workBitmap = if (scale < 1f) {
-            Bitmap.createScaledBitmap(source, workWidth, workHeight, true)
-        } else source
+    /**
+     * 真正的高斯模糊（3次 BoxBlur 叠加逼近高斯）
+     * 相比单次 BoxBlur，这种方式边缘极其柔和，绝对不会出现鬼影和发光
+     */
+    private fun gaussianBlur(source: Bitmap, radius: Int): Bitmap {
+        // 先缩小图片，极大提高性能并增加柔滑感
+        val scale = 0.25f
+        val smallWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
+        val smallHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(source, smallWidth, smallHeight, true)
 
-        val width = workBitmap.width
-        val height = workBitmap.height
+        // 3次 BoxBlur 叠加
+        var blurred = boxBlur(scaled, radius / 2)
+        blurred = boxBlur(blurred, radius / 2)
+        blurred = boxBlur(blurred, radius / 2)
+
+        // 放大回原尺寸
+        val result = Bitmap.createScaledBitmap(blurred, source.width, source.height, true)
+        
+        if (scaled !== source) scaled.recycle()
+        if (blurred !== scaled) blurred.recycle()
+        
+        return result
+    }
+
+    private fun boxBlur(source: Bitmap, radius: Int): Bitmap {
+        val r = radius.coerceAtLeast(1)
+        val width = source.width
+        val height = source.height
         val input = IntArray(width * height)
         val horizontal = IntArray(width * height)
         val output = IntArray(width * height)
-        workBitmap.getPixels(input, 0, width, 0, 0, width, height)
+        source.getPixels(input, 0, width, 0, 0, width, height)
 
         for (y in 0 until height) {
             val row = y * width
@@ -182,19 +217,8 @@ object WallpaperProcessor {
             }
         }
 
-        val blurred = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+        return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
             it.setPixels(output, 0, width, 0, 0, width, height)
         }
-        
-        val result = if (scale < 1f) {
-            Bitmap.createScaledBitmap(blurred, source.width, source.height, true).also {
-                if (it !== blurred) blurred.recycle()
-                if (workBitmap !== source) workBitmap.recycle()
-            }
-        } else {
-            blurred
-        }
-        
-        return result
     }
 }

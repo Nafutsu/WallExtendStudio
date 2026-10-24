@@ -138,13 +138,12 @@ private fun WallExtendApp(screen: ScreenSpec) {
     var loadingPhoto by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(FillMode.ADVANCED_BLUR) }
     var scale by remember { mutableFloatStateOf(1f) }
     var verticalPosition by remember { mutableFloatStateOf(0.5f) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    var clearAreaRatio by remember { mutableFloatStateOf(0.5f) }
-    var edgeBlurRadius by remember { mutableFloatStateOf(40f) }
+    var clearAreaRatio by remember { mutableFloatStateOf(0.6f) }
+    var edgeBlurRadius by remember { mutableFloatStateOf(60f) } // 默认为厚
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -164,8 +163,8 @@ private fun WallExtendApp(screen: ScreenSpec) {
                     originalDimensions = loaded.originalWidth to loaded.originalHeight
                     scale = 1f
                     verticalPosition = 0.5f
-                    clearAreaRatio = 0.5f
-                    edgeBlurRadius = 40f
+                    clearAreaRatio = 0.6f
+                    edgeBlurRadius = 60f
                     releaseBitmapLater(scope, oldPhoto, 250L)
                     releaseBitmapLater(scope, oldPreview, 180L)
                 } catch (error: Exception) {
@@ -191,7 +190,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
         val ownerContext = currentCoroutineContext()
         val rendered = withContext(Dispatchers.Default + NonCancellable) {
             WallpaperProcessor.render(
-                source, previewWidth, previewHeight, mode, scale, verticalPosition,
+                source, previewWidth, previewHeight, FillMode.ADVANCED_BLUR, scale, verticalPosition,
                 blurConfig = BlurMaskConfig(
                     clearAreaRatio = clearAreaRatio,
                     edgeBlurRadius = edgeBlurRadius.toInt(),
@@ -288,10 +287,7 @@ private fun WallExtendApp(screen: ScreenSpec) {
                                 }
                                 withContext(Dispatchers.IO) {
                                     WallpaperManager.getInstance(context).setBitmap(
-                                        output!!,
-                                        null,
-                                        true,
-                                        WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+                                        output!!, null, true, WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
                                     )
                                 }
                                 statusMessage = "已应用到桌面与锁屏"
@@ -369,19 +365,12 @@ private fun saveToPictures(context: Context, bitmap: Bitmap): Uri? {
 @Composable
 private fun HomeScreen(screen: ScreenSpec, statusMessage: String, onPick: () -> Unit) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(top = 10.dp, bottom = 22.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 10.dp, bottom = 22.dp),
         verticalArrangement = Arrangement.spacedBy(26.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
             Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(White)
-                    .border(1.dp, Line, RoundedCornerShape(12.dp)),
+                modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(White).border(1.dp, Line, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Text("↕", color = Accent, fontSize = 24.sp, fontWeight = FontWeight.Medium)
@@ -400,12 +389,7 @@ private fun HomeScreen(screen: ScreenSpec, statusMessage: String, onPick: () -> 
         }
 
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(White)
-                .border(1.dp, Line, RoundedCornerShape(18.dp))
-                .padding(horizontal = 16.dp, vertical = 17.dp),
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(White).border(1.dp, Line, RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 17.dp),
             verticalArrangement = Arrangement.spacedBy(15.dp)
         ) {
             Text("当前设备", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -466,19 +450,14 @@ private fun EditorScreen(
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(top = 4.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
-            Box(
-                Modifier.clip(CircleShape).clickable(onClick = onBack).size(38.dp).background(White).border(1.dp, Line, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(Modifier.clip(CircleShape).clickable(onClick = onBack).size(38.dp).background(White).border(1.dp, Line, CircleShape), contentAlignment = Alignment.Center) {
                 Text("‹", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Light)
             }
             Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("编辑壁纸", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Text("预览将匹配当前屏幕比例", color = Muted, fontSize = 11.sp)
             }
-            Box(
-                Modifier.clip(CircleShape).clickable(onClick = onPick).background(White).border(1.dp, Line, CircleShape).padding(horizontal = 13.dp, vertical = 9.dp)
-            ) {
+            Box(Modifier.clip(CircleShape).clickable(onClick = onPick).background(White).border(1.dp, Line, CircleShape).padding(horizontal = 13.dp, vertical = 9.dp)) {
                 Text("更换", color = Accent, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             }
         }
@@ -488,32 +467,25 @@ private fun EditorScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             DevicePreview(screen, previewBitmap)
-            Text(
-                "${screen.resolutionLabel} · 原图 ${originalDimensions.first} × ${originalDimensions.second} px",
-                color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp, bottom = 18.dp)
-            )
+            Text("${screen.resolutionLabel} · 原图 ${originalDimensions.first} × ${originalDimensions.second} px", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 10.dp, bottom = 18.dp))
 
             Column(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(White).border(1.dp, Line, RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(17.dp)
             ) {
-                // 画面缩放
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("画面缩放", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
                         Text("${String.format(Locale.US, "%.2f", scale)}×", color = Accent, fontSize = 13.sp)
                     }
-                    MiuixSlider(
-                        value = scale, onValueChange = onScaleChange, valueRange = 0.65f..1.35f, modifier = Modifier.fillMaxWidth()
-                    )
+                    MiuixSlider(value = scale, onValueChange = onScaleChange, valueRange = 0.8f..1.2f, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("更多画面", color = Muted, fontSize = 11.sp)
                         Text("放大主体", color = Muted, fontSize = 11.sp)
                     }
                 }
                 
-                // 上下位置
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("上下位置", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -536,32 +508,28 @@ private fun EditorScreen(
                 
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
                 
-                // 调整模糊厚度
+                // 调整模糊厚度：现在可以拉到 100 以上，背景会非常厚实
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("顶部模糊厚度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("背景模糊厚度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
                         Text("${edgeBlurRadius.toInt()}", color = Accent, fontSize = 13.sp)
                     }
-                    MiuixSlider(
-                        value = edgeBlurRadius, onValueChange = onBlurRadiusChange, valueRange = 10f..80f, modifier = Modifier.fillMaxWidth()
-                    )
+                    MiuixSlider(value = edgeBlurRadius, onValueChange = onBlurRadiusChange, valueRange = 20f..120f, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("薄", color = Muted, fontSize = 11.sp)
                         Text("厚", color = Muted, fontSize = 11.sp)
                     }
                 }
 
-                // 调整清晰范围（控制模糊过渡到哪里）
+                // 控制清晰区域占比
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("模糊过渡深度", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("清晰主体范围", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.weight(1f))
                         Text("${(clearAreaRatio * 100).toInt()}%", color = Accent, fontSize = 13.sp)
                     }
-                    MiuixSlider(
-                        value = clearAreaRatio, onValueChange = onClearAreaChange, valueRange = 0.1f..0.9f, modifier = Modifier.fillMaxWidth()
-                    )
+                    MiuixSlider(value = clearAreaRatio, onValueChange = onClearAreaChange, valueRange = 0.2f..0.9f, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("过渡浅", color = Muted, fontSize = 11.sp)
                         Text("过渡深", color = Muted, fontSize = 11.sp)
@@ -598,14 +566,7 @@ private fun DevicePreview(screen: ScreenSpec, bitmap: Bitmap?) {
         val phoneHeight = minOf(300.dp, maxHeight)
         val phoneWidth = phoneHeight * screen.aspect
         Box(
-            modifier = Modifier
-                .width(phoneWidth)
-                .height(phoneHeight)
-                .clip(RoundedCornerShape(30.dp))
-                .background(Color(0xFF161618))
-                .padding(3.dp)
-                .clip(RoundedCornerShape(27.dp))
-                .background(Color(0xFFF2F2F7))
+            modifier = Modifier.width(phoneWidth).height(phoneHeight).clip(RoundedCornerShape(30.dp)).background(Color(0xFF161618)).padding(3.dp).clip(RoundedCornerShape(27.dp)).background(Color(0xFFF2F2F7))
         ) {
             if (bitmap != null) {
                 Image(bitmap.asImageBitmap(), contentDescription = "Wallpaper preview", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.FillBounds)
